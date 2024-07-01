@@ -325,9 +325,7 @@ class CommandQueueMT {
 
 	/***** BASE *******/
 
-	enum {
-		DEFAULT_COMMAND_MEM_SIZE_KB = 256,
-	};
+	static const uint32_t DEFAULT_COMMAND_MEM_SIZE_KB = 64;
 
 	BinaryMutex mutex;
 	LocalVector<uint8_t> command_mem;
@@ -366,7 +364,7 @@ class CommandQueueMT {
 
 		lock();
 
-		WorkerThreadPool::thread_enter_command_queue_mt_flush(this);
+		uint32_t allowance_id = WorkerThreadPool::thread_enter_unlock_allowance_zone(&mutex);
 		while (flush_read_ptr < command_mem.size()) {
 			uint64_t size = *(uint64_t *)&command_mem[flush_read_ptr];
 			flush_read_ptr += 8;
@@ -385,7 +383,7 @@ class CommandQueueMT {
 
 			flush_read_ptr += size;
 		}
-		WorkerThreadPool::thread_exit_command_queue_mt_flush();
+		WorkerThreadPool::thread_exit_unlock_allowance_zone(allowance_id);
 
 		command_mem.clear();
 		flush_read_ptr = 0;
