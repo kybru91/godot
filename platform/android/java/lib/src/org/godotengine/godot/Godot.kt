@@ -56,6 +56,7 @@ import com.google.android.vending.expansion.downloader.*
 import org.godotengine.godot.error.Error
 import org.godotengine.godot.input.GodotEditText
 import org.godotengine.godot.input.GodotInputHandler
+import org.godotengine.godot.io.FilePicker
 import org.godotengine.godot.io.directory.DirectoryAccessHandler
 import org.godotengine.godot.io.file.FileAccessHandler
 import org.godotengine.godot.plugin.AndroidRuntimePlugin
@@ -63,6 +64,7 @@ import org.godotengine.godot.plugin.GodotPlugin
 import org.godotengine.godot.plugin.GodotPluginRegistry
 import org.godotengine.godot.tts.GodotTTS
 import org.godotengine.godot.utils.CommandLineFileParser
+import org.godotengine.godot.utils.DialogUtils
 import org.godotengine.godot.utils.GodotNetUtils
 import org.godotengine.godot.utils.PermissionsUtil
 import org.godotengine.godot.utils.PermissionsUtil.requestPermission
@@ -80,6 +82,7 @@ import java.security.MessageDigest
 import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+
 
 /**
  * Core component used to interface with the native layer of the engine.
@@ -477,12 +480,17 @@ class Godot(private val context: Context) {
 			// ...add to FrameLayout
 			containerLayout?.addView(editText)
 			renderView = if (usesVulkan()) {
-				if (!meetsVulkanRequirements(activity.packageManager)) {
+				if (meetsVulkanRequirements(activity.packageManager)) {
+					GodotVulkanRenderView(host, this, godotInputHandler)
+				} else if (canFallbackToOpenGL()) {
+					// Fallback to OpenGl.
+					GodotGLRenderView(host, this, godotInputHandler, xrMode, useDebugOpengl)
+				} else {
 					throw IllegalStateException(activity.getString(R.string.error_missing_vulkan_requirements_message))
 				}
-				GodotVulkanRenderView(host, this, godotInputHandler)
+
 			} else {
-				// Fallback to openGl
+				// Fallback to OpenGl.
 				GodotGLRenderView(host, this, godotInputHandler, xrMode, useDebugOpengl)
 			}
 
@@ -670,6 +678,9 @@ class Godot(private val context: Context) {
 		for (plugin in pluginRegistry.allPlugins) {
 			plugin.onMainActivityResult(requestCode, resultCode, data)
 		}
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+			FilePicker.handleActivityResult(context, requestCode, resultCode, data)
+		}
 	}
 
 	/**
@@ -734,6 +745,7 @@ class Godot(private val context: Context) {
 
 		runOnUiThread {
 			registerSensorsIfNeeded()
+			enableImmersiveMode(useImmersive.get(), true)
 		}
 
 		for (plugin in pluginRegistry.allPlugins) {
@@ -772,7 +784,7 @@ class Godot(private val context: Context) {
 			val builder = AlertDialog.Builder(activity)
 			builder.setMessage(message).setTitle(title)
 			builder.setPositiveButton(
-				"OK"
+				R.string.dialog_ok
 			) { dialog: DialogInterface, id: Int ->
 				okCallback?.run()
 				dialog.cancel()
@@ -814,6 +826,13 @@ class Godot(private val context: Context) {
 		val renderer = GodotLib.getGlobal("rendering/renderer/rendering_method")
 		val renderingDevice = GodotLib.getGlobal("rendering/rendering_device/driver")
 		return ("forward_plus" == renderer || "mobile" == renderer) && "vulkan" == renderingDevice
+	}
+
+	/**
+	 * Returns true if can fallback to OpenGL.
+	 */
+	private fun canFallbackToOpenGL(): Boolean {
+		return java.lang.Boolean.parseBoolean(GodotLib.getGlobal("rendering/rendering_device/fallback_to_opengl3"))
 	}
 
 	/**
@@ -876,6 +895,51 @@ class Godot(private val context: Context) {
 		mClipboard.setPrimaryClip(clip)
 	}
 
+	@Keep
+	private fun showFilePicker(currentDirectory: String, filename: String, fileMode: Int, filters: Array<String>) {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+			FilePicker.showFilePicker(context, getActivity(), currentDirectory, filename, fileMode, filters)
+		}
+	}
+
+	/**
+	 * This method shows a dialog with multiple buttons.
+	 *
+	 * @param title The title of the dialog.
+	 * @param message The message displayed in the dialog.
+	 * @param buttons An array of button labels to display.
+	 */
+	@Keep
+	private fun showDialog(title: String, message: String, buttons: Array<String>) {
+		getActivity()?.let { DialogUtils.showDialog(it, title, message, buttons) }
+	}
+
+	/**
+	 * This method shows a dialog with a text input field, allowing the user to input text.
+	 *
+	 * @param title The title of the input dialog.
+	 * @param message The message displayed in the input dialog.
+	 * @param existingText The existing text that will be pre-filled in the input field.
+	 */
+	@Keep
+	private fun showInputDialog(title: String, message: String, existingText: String) {
+		getActivity()?.let { DialogUtils.showInputDialog(it, title, message, existingText) }
+	}
+
+	@Keep
+	private fun getAccentColor(): Int {
+		val value = TypedValue()
+		context.theme.resolveAttribute(android.R.attr.colorAccent, value, true)
+		return value.data
+	}
+
+	@Keep
+	private fun getBaseColor(): Int {
+		val value = TypedValue()
+		context.theme.resolveAttribute(android.R.attr.colorBackground, value, true)
+		return value.data
+	}
+
 	/**
 	 * Destroys the Godot Engine and kill the process it's running in.
 	 */
@@ -913,15 +977,10 @@ class Godot(private val context: Context) {
 	}
 
 	fun onBackPressed() {
-		var shouldQuit = true
 		for (plugin in pluginRegistry.allPlugins) {
-			if (plugin.onMainBackPressed()) {
-				shouldQuit = false
-			}
+			plugin.onMainBackPressed()
 		}
-		if (shouldQuit) {
-			renderView?.queueOnRenderThread { GodotLib.back() }
-		}
+		renderView?.queueOnRenderThread { GodotLib.back() }
 	}
 
 	/**
@@ -980,7 +1039,8 @@ class Godot(private val context: Context) {
 	}
 
 	fun requestPermission(name: String?): Boolean {
-		return requestPermission(name, getActivity())
+		val activity = getActivity() ?: return false
+		return requestPermission(name, activity)
 	}
 
 	fun requestPermissions(): Boolean {
@@ -1067,7 +1127,7 @@ class Godot(private val context: Context) {
 
 	@Keep
 	private fun createNewGodotInstance(args: Array<String>): Int {
-		return primaryHost?.onNewGodotInstanceRequested(args) ?: 0
+		return primaryHost?.onNewGodotInstanceRequested(args) ?: -1
 	}
 
 	@Keep
