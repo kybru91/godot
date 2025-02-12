@@ -36,6 +36,7 @@
 #include "core/string/ustring.h"
 #include "core/templates/list.h"
 #include "core/templates/rb_map.h"
+#include "core/templates/safe_refcount.h"
 #include "core/typedefs.h"
 #include "core/variant/variant.h"
 #include "scene/resources/shader_include.h"
@@ -619,10 +620,8 @@ public:
 		struct Varying {
 			enum Stage {
 				STAGE_UNKNOWN,
-				STAGE_VERTEX, // transition stage to STAGE_VERTEX_TO_FRAGMENT_LIGHT, emits warning if it's not used
-				STAGE_FRAGMENT, // transition stage to STAGE_FRAGMENT_TO_LIGHT, emits warning if it's not used
-				STAGE_VERTEX_TO_FRAGMENT_LIGHT,
-				STAGE_FRAGMENT_TO_LIGHT,
+				STAGE_VERTEX,
+				STAGE_FRAGMENT,
 			};
 
 			Stage stage = STAGE_UNKNOWN;
@@ -825,6 +824,7 @@ public:
 	static bool is_float_type(DataType p_type);
 	static bool is_sampler_type(DataType p_type);
 	static Variant constant_value_to_variant(const Vector<Scalar> &p_value, DataType p_type, int p_array_size, ShaderLanguage::ShaderNode::Uniform::Hint p_hint = ShaderLanguage::ShaderNode::Uniform::HINT_NONE);
+	static Variant get_default_datatype_value(DataType p_type, int p_array_size, ShaderLanguage::ShaderNode::Uniform::Hint p_hint);
 	static PropertyInfo uniform_to_property_info(const ShaderNode::Uniform &p_uniform);
 	static uint32_t get_datatype_size(DataType p_type);
 	static uint32_t get_datatype_component_count(DataType p_type);
@@ -833,7 +833,7 @@ public:
 	static bool is_control_flow_keyword(String p_keyword);
 	static void get_builtin_funcs(List<String> *r_keywords);
 
-	static int instance_counter;
+	static SafeNumeric<int> instance_counter;
 
 	struct BuiltInInfo {
 		DataType type = TYPE_VOID;
@@ -859,6 +859,7 @@ public:
 
 		Vector<Argument> arguments;
 		DataType return_type = TYPE_VOID;
+		String skip_function;
 	};
 
 	struct ModeInfo {
@@ -934,7 +935,7 @@ private:
 		const char *text;
 		uint32_t flags;
 		const Vector<String> excluded_shader_types;
-		const Vector<String> functions;
+		const Vector<String> excluded_functions;
 	};
 
 	static const KeyWord keyword_list[];
@@ -1150,6 +1151,7 @@ private:
 
 	const HashMap<StringName, FunctionInfo> *stages = nullptr;
 	bool is_supported_frag_only_funcs = false;
+	bool is_discard_supported = false;
 
 	bool _get_completable_identifier(BlockNode *p_block, CompletionType p_type, StringName &identifier);
 	static const BuiltinFuncDef builtin_func_defs[];
@@ -1211,7 +1213,7 @@ public:
 	struct ShaderCompileInfo {
 		HashMap<StringName, FunctionInfo> functions;
 		Vector<ModeInfo> render_modes;
-		VaryingFunctionNames varying_function_names = VaryingFunctionNames();
+		VaryingFunctionNames varying_function_names;
 		HashSet<String> shader_types;
 		GlobalShaderUniformGetTypeFunc global_shader_uniform_type_func = nullptr;
 		bool is_include = false;
